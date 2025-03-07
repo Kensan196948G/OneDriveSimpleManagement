@@ -1,0 +1,2 @@
+# OneDriveSimpleManagementtool
+OneDrive for Business向けの簡易運用ツール
