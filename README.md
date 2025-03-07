@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 📊 OneDrive利用状況レポートツール
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -85,7 +84,3 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Kensan196948G/OneDrive
 ---
 
 *最終更新日: 2025年3月7日*
-=======
-# OneDriveSimpleManagementtool
-OneDrive for Business向けの簡易運用ツール
->>>>>>> origin/main
