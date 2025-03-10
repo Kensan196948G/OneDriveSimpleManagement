@@ -35,6 +35,16 @@ $currentUser = Get-MgUser -UserId $UserUPN -Property DisplayName,Mail,onPremises
 
 # グローバル管理者かどうかを判定
 $isAdmin = ($context.Scopes -contains "Directory.ReadWrite.All")
+ # Directory.ReadWrite.All権限があるかどうか
+
+# ユーザーの役割を取得（グローバル管理者かどうかを確認）
+$roles = Get-MgDirectoryRole -All
+$globalAdminRole = $roles | Where-Object { $_.DisplayName -eq "Global Administrator" -or $_.DisplayName -eq "Company Administrator" }
+
+if ($globalAdminRole) {
+    $roleMembers = Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id
+    $isGlobalAdmin = $roleMembers.Id -contains $currentUser.Id
+}
 
 # 出力用のユーザーリスト
 $userList = @()
@@ -43,6 +53,15 @@ if ($isAdmin) {
     # グローバル管理者の場合、すべてのユーザー情報を取得
     $allUsers = Get-MgUser -All -Property DisplayName,Mail,onPremisesSamAccountName,AccountEnabled,onPremisesLastSyncDateTime,UserType
     foreach ($user in $allUsers) {
+        # ユーザー種別の判定
+        $userTypeValue = "Member" # デフォルト値
+        if ($user.UserType -eq "Guest") {
+            $userTypeValue = "Guest"
+        }
+        # 管理者かどうかを確認
+        if ($roleMembers.Id -contains $user.Id) {
+            $userTypeValue = "Administrator"
+        }
         try {
             $drive = Get-MgUserDrive -UserId $user.UserPrincipalName -ErrorAction Stop
             $totalGB = [math]::Round($drive.Quota.Total / 1GB, 2)
@@ -54,24 +73,33 @@ if ($isAdmin) {
             $usedGB = "取得不可"
             $remainingGB = "取得不可"
             $usagePercent = "取得不可"
+            $oneDriveStatus = "未設定"
         }
         
         $userList += [PSCustomObject]@{
             "ユーザー名"       = $user.DisplayName
             "メールアドレス"   = $user.Mail
             "ログインユーザー名" = if($user.onPremisesSamAccountName){$user.onPremisesSamAccountName}else{"同期なし"}
-            "ユーザー種別"   = if($user.UserType){$user.UserType}else{"未定義"}
+            "ユーザー種別"   = $userTypeValue
             "アカウント状態"   = if($user.AccountEnabled){"有効"}else{"無効"}
             "最終同期日時"   = if($user.onPremisesLastSyncDateTime){$user.onPremisesLastSyncDateTime}else{"同期情報なし"}
             "総容量(GB)"   = $totalGB
             "使用容量(GB)"   = $usedGB
             "残り容量(GB)"   = $remainingGB
             "使用率(%)"     = $usagePercent
+            "OneDrive状態"  = if($totalGB -eq "取得不可"){"未設定"}else{"設定済"}
         }
     }
 } else {
     # 一般ユーザーまたはゲストの場合、自分自身の情報のみ取得
     try {
+        # ユーザー種別の判定（自分自身）
+        $userTypeValue = "Member" # デフォルト値
+        if ($currentUser.UserType -eq "Guest") {
+            $userTypeValue = "Guest"
+        } elseif ($isGlobalAdmin) {
+            $userTypeValue = "Administrator"
+        }
         $myDrive = Get-MgUserDrive -UserId $UserUPN -ErrorAction Stop
         $totalGB = [math]::Round($myDrive.Quota.Total / 1GB, 2)
         $usedGB = [math]::Round($myDrive.Quota.Used / 1GB, 2)
@@ -82,19 +110,21 @@ if ($isAdmin) {
         $usedGB = "取得不可"
         $remainingGB = "取得不可"
         $usagePercent = "取得不可"
+        $oneDriveStatus = "未設定"
     }
     
     $userList += [PSCustomObject]@{
         "ユーザー名"       = $currentUser.DisplayName
         "メールアドレス"   = $currentUser.Mail
         "ログインユーザー名" = if($currentUser.onPremisesSamAccountName){$currentUser.onPremisesSamAccountName}else{"同期なし"}
-        "ユーザー種別"   = if($currentUser.UserType){$currentUser.UserType}else{"未定義"}
+        "ユーザー種別"   = $userTypeValue
         "アカウント状態"   = if($currentUser.AccountEnabled){"有効"}else{"無効"}
         "最終同期日時"   = if($currentUser.onPremisesLastSyncDateTime){$currentUser.onPremisesLastSyncDateTime}else{"同期情報なし"}
         "総容量(GB)"   = $totalGB
         "使用容量(GB)"   = $usedGB
         "残り容量(GB)"   = $remainingGB
         "使用率(%)"     = $usagePercent
+        "OneDrive状態"  = if($totalGB -eq "取得不可"){"未設定"}else{"設定済"}
     }
 }
 
@@ -516,7 +546,7 @@ function printTable() {
 function colorizeRows() {
     var table = document.getElementById('userTable');
     var rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
-    
+
     for (var i = 0; i < rows.length; i++) {
         var usageCell = rows[i].querySelector('td:nth-child(10)'); // 使用率のセル
         if (usageCell) {
@@ -527,6 +557,14 @@ function colorizeRows() {
                 } else if (usage >= 70) {
                     rows[i].classList.add('warning');
                 } else {
+                    rows[i].classList.add('normal');
+                }
+            }
+ else if (usageCell.textContent === "取得不可") {
+                // OneDrive未設定の場合
+                rows[i].classList.add('not-configured');
+            } else {
+                // その他の場合（数値でない場合）
                     rows[i].classList.add('normal');
                 }
             }
@@ -725,6 +763,10 @@ $htmlContent = @"
         tr.normal {
             background-color: #f1f8e9;
         }
+        tr.not-configured {
+            background-color: #e0e0e0;
+            font-style: italic;
+        }
         tr.disabled {
             color: #999;
             font-style: italic;
@@ -804,7 +846,7 @@ $htmlContent = @"
             <p><span class="info-label">実行日時:</span> $executionDateFormatted</p>
             <p><span class="info-label">実行者:</span> $executorName</p>
             <p><span class="info-label">実行者の種別:</span> $userType</p>
-            <p><span class="info-label">実行モード:</span> $(if($isAdmin){"管理者モード"}else{"ユーザーモード"})</p>
+            <p><span class="info-label">実行モード:</span> $(if($isAdmin){"管理者モード (Administrator)"}else{"ユーザーモード"})</p>
             <p><span class="info-label">出力フォルダ:</span> $dateFolderPath</p>
         </div>
         
@@ -830,6 +872,7 @@ $htmlContent = @"
                     <th>使用容量(GB)</th>
                     <th>残り容量(GB)</th>
                     <th>使用率(%)</th>
+                    <th>OneDrive状態</th>
                 </tr>
             </thead>
             <tbody>
@@ -853,6 +896,7 @@ foreach ($user in $userList) {
                     <td>$($user.'使用容量(GB)')</td>
                     <td>$($user.'残り容量(GB)')</td>
                     <td>$($user.'使用率(%)')</td>
+                    <td>$($user.'OneDrive状態')</td>
                 </tr>
 "@
 }
@@ -865,6 +909,8 @@ $htmlContent += @"
         <div class="info-section">
             <p><span class="info-label">色の凡例:</span></p>
             <p>🟢 緑色の行: 使用率が70%未満のユーザー</p>
+            <p>⚫ グレー色の行: OneDriveを設定利用していないユーザー</p>
+            <p>⚪ 「未設定」: OneDriveが設定されていないことを示します</p>
             <p>🟡 黄色の行: 使用率が70%以上90%未満のユーザー</p>
             <p>🔴 赤色の行: 使用率が90%以上のユーザー</p>
             <p>⚪ グレーの行: 無効なアカウント</p>
