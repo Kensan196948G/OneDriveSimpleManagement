@@ -40,12 +40,60 @@ if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
 }
 
 # Microsoft Graph に接続（基本情報取得のための最小スコープ）
-try {
-    Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All"
-    Write-Output "Microsoft Graph APIに接続しました（初期スコープ: User.Read.All, Directory.Read.All）"
-} 
-catch {
-    Write-Error "Microsoft Graph APIへの接続に失敗しました: $_"
+$maxRetries = 2
+$retryCount = 0
+$connected = $false
+
+while (-not $connected -and $retryCount -lt $maxRetries) {
+    try {
+        Write-Output "Microsoft Graph API接続を試みています... (試行 $($retryCount + 1)/$maxRetries)"
+        
+        # 現在の認証状態を確認
+        $currentContext = Get-MgContext -ErrorAction SilentlyContinue
+        if ($currentContext) {
+            Write-Output "既存の認証セッションを検出しました: $($currentContext.Account)"
+            $connected = $true
+            break
+        }
+        
+        # 認証方法を選択
+        if ($retryCount -eq 0) {
+            # 1回目はインタラクティブ認証
+            Write-Output "ブラウザ認証を開始します..."
+            Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All" -NoWelcome -ErrorAction Stop
+        } else {
+            # 2回目はデバイスコード認証
+            Write-Output "デバイスコード認証に切り替えます..."
+            Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All" -NoWelcome -UseDeviceAuthentication -ErrorAction Stop
+        }
+        
+        # 接続成功を確認
+        $context = Get-MgContext -ErrorAction Stop
+        if ($context) {
+            Write-Output "Microsoft Graph APIに接続しました（初期スコープ: User.Read.All, Directory.Read.All）"
+            Write-Output "認証アカウント: $($context.Account)"
+            $connected = $true
+        } else {
+            throw "認証は成功しましたが、コンテキストが取得できませんでした"
+        }
+    } 
+    catch {
+        $retryCount++
+        Write-Warning "Microsoft Graph APIへの接続に失敗しました (試行 $retryCount/$maxRetries): $_"
+        
+        if ($retryCount -ge $maxRetries) {
+            Write-Error "すべての認証試行が失敗しました。スクリプトを終了します。"
+            Exit 1
+        }
+        
+        # 再試行前に少し待機
+        Start-Sleep -Seconds 2
+    }
+}
+
+# 接続状態の最終確認
+if (-not $connected) {
+    Write-Error "Microsoft Graph APIに接続できませんでした。スクリプトを終了します。"
     Exit 1
 }
 
@@ -112,12 +160,48 @@ $isAdmin = ($context.Scopes -contains "Directory.ReadWrite.All") # Directory.Rea
 
 #region 追加スコープで再接続
 # グローバル管理者または承認済みユーザーなら、Microsoft Graph にフル接続
-try {
-    Connect-MgGraph -Scopes $requiredScopes
-    Write-Output "Microsoft Graph APIに再接続しました（フルスコープ: $($requiredScopes -join ', ')）"
-} 
-catch {
-    Write-Warning "追加スコープでの接続に失敗しました。制限付きの機能で続行します: $_"
+Write-Output "追加スコープで再接続を試みます..."
+
+# 現在のセッションの権限を確認
+$currentContext = Get-MgContext
+if ($currentContext) {
+    $hasRequiredScopes = $true
+    foreach ($scope in $requiredScopes) {
+        # 直接または上位権限があるか確認
+        $hasScope = $currentContext.Scopes -contains $scope
+        $hasHigherScope = $false
+        
+        # 上位権限の確認
+        foreach ($grantedScope in $currentContext.Scopes) {
+            if (($scope -eq "Sites.Read.All" -and $grantedScope -contains "Sites.ReadWrite.All") -or
+                ($scope -eq "Directory.Read.All" -and $grantedScope -contains "Directory.ReadWrite.All") -or
+                $grantedScope -like "*$($scope.Replace('.Read.', '.ReadWrite.'))*" -or 
+                $grantedScope -like "*$($scope.Replace('.Read.', '.FullControl.'))*") {
+                $hasHigherScope = $true
+                break
+            }
+        }
+        
+        if (-not $hasScope -and -not $hasHigherScope) {
+            $hasRequiredScopes = $false
+            break
+        }
+    }
+    
+    if ($hasRequiredScopes) {
+        Write-Output "現在のセッションで必要な権限が確認されました - 再接続は不要です"
+    } else {
+        # 不足している権限がある場合は再接続を試みる
+        try {
+            # デバイスコード認証を優先（ブラウザ認証の問題を避けるため）
+            Connect-MgGraph -Scopes $requiredScopes -NoWelcome -UseDeviceAuthentication -ErrorAction Stop
+            Write-Output "Microsoft Graph APIに再接続しました（フルスコープ: $($requiredScopes -join ', ')）"
+        } catch {
+            Write-Warning "追加スコープでの接続に失敗しましたが、基本機能で続行します: $_"
+        }
+    }
+} else {
+    Write-Warning "現在のグラフコンテキストが見つかりません。基本機能のみで続行します。"
 }
 #endregion
 
