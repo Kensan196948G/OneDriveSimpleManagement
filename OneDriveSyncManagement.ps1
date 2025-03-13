@@ -13,7 +13,7 @@ param (
 )
 
 # Microsoft Graph の API パーミッション設定
-$tenantId = "your-tenant-id"
+$tenantId = "a7232f7a-a9e5-4f71-9372-dc8b1c6645ea"
 $clientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # Graph PowerShellのClientID
 $requiredScopes = @("User.Read.All", "Directory.Read.All", "Sites.Read.All")
 

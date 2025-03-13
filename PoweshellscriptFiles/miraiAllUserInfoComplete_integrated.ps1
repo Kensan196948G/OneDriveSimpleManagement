@@ -1,14 +1,21 @@
-# OneDriveCheck PowerShell スクリプト (統合版)
+# OneDriveSimpleManagement - 統合版PowerShellスクリプト
+# 
+# 概要: Microsoft Graph APIを使用してOneDriveの利用状況を取得し、CSV/HTML形式でレポートを生成します
+# 機能:
+# - APIパーミッションのチェックと管理者への自動リクエスト
+# - ユーザー種別の判定（Administrator、Member、Guest）
+# - ユーザー情報とOneDrive使用状況の取得
+# - インタラクティブなHTMLレポートの生成
 
 param (
-    [string]$OutputDir = "$(Get-Location)",
-    [string]$tenantId = "your-tenant-id",
-    [string]$clientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # Graph PowerShellのClientID
+    [string]$OutputDir = "$(Get-Location)"
 )
+
+#region 初期設定
 
 # 実行開始時刻を記録
 $executionTime = Get-Date
-Write-Output "スクリプト実行開始: $($executionTime.ToString('yyyy/MM/dd HH:mm:ss'))"
+Write-Output "実行開始時刻: $executionTime"
 
 # 日付ベースのフォルダ名を作成 (OneDriveCheck.YYYYMMDD)
 $dateFolderName = "OneDriveCheck." + $executionTime.ToString("yyyyMMdd")
@@ -20,71 +27,56 @@ if (-not (Test-Path -Path $dateFolderPath)) {
     Write-Output "出力用フォルダを作成しました: $dateFolderPath"
 }
 
-#region Microsoft.Graph 接続準備
 # Microsoft Graphモジュールのインストール確認と実施
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
     Write-Host "Microsoft.Graph モジュールが未インストールのためインストールします..."
-    try {
-        Install-Module Microsoft.Graph -Scope CurrentUser -Force
-        Write-Output "Microsoft.Graph モジュールのインストールに成功しました"
-    }
-    catch {
-        Write-Error "Microsoft.Graph モジュールのインストールに失敗しました: $_"
-        exit 1
-    }
+    Install-Module Microsoft.Graph -Scope CurrentUser -Force
 }
 
-# 必要なスコープ定義
-$basicScopes = @("User.Read.All", "Directory.Read.All")
-$requiredScopes = @("Sites.Read.All", "Files.Read.All", "User.Read.All", "Directory.Read.All")
-
-# Microsoft Graph に接続（基本情報取得のための最小スコープ）
-try {
-    Write-Output "Microsoft Graph に接続しています (基本スコープ)..."
-    Connect-MgGraph -Scopes $basicScopes
-    Write-Output "Microsoft Graph に正常に接続しました：スコープ ($($basicScopes -join ', '))"
-}
-catch {
-    Write-Error "Microsoft Graph への接続に失敗しました: $_"
-    exit 1
-}
 #endregion
 
-#region ユーザー認証と権限確認
-# 現在のコンテキストを取得
+#region Microsoft Graph API接続と権限管理
+
+# Microsoft Graph の API パーミッションを管理者にリクエスト
+$tenantId = "your-tenant-id"
+$clientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e"  # Graph PowerShellのClientID
+$requiredScopes = @("User.Read.All", "Directory.Read.All", "Sites.Read.All")
+
+# Microsoft Graph に接続（基本情報取得のための最小スコープ）
+Write-Output "Microsoft Graph APIに基本接続を試みます..."
+Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All"
+Write-Output "Microsoft Graph APIに基本接続しました（スコープ: $((Get-MgContext).Scopes -join ', ')）"
+
+# ログインユーザーのUPN（メールアドレス）を自動取得
 $context = Get-MgContext
 $UserUPN = $context.Account
-Write-Output "現在のログインユーザー: $UserUPN"
+Write-Output "ログインユーザー: $UserUPN"
 
 # ログイン済ユーザー情報を取得
-try {
-    $currentUser = Get-MgUser -UserId $UserUPN -Property DisplayName,Mail,UserType,Id,onPremisesSamAccountName,AccountEnabled,onPremisesLastSyncDateTime
-    Write-Output "ユーザー情報を取得しました: $($currentUser.DisplayName)"
-}
-catch {
-    Write-Error "ユーザー情報の取得に失敗しました: $_"
-    exit 1
-}
+$currentUser = Get-MgUser -UserId $UserUPN -Property DisplayName,Mail,onPremisesSamAccountName,AccountEnabled,onPremisesLastSyncDateTime,UserType
+Write-Output "ユーザー情報: $($currentUser.DisplayName) ($($currentUser.UserType))"
 
-# グローバル管理者かどうかを判定するための準備
+# グローバル管理者かどうかを判定
+$isAdmin = ($context.Scopes -contains "Directory.ReadWrite.All")  # Directory.ReadWrite.All権限があるかどうか
+
+# ユーザーの役割を取得（グローバル管理者かどうかを確認）
 $roles = Get-MgDirectoryRole -All
 $globalAdminRole = $roles | Where-Object { $_.DisplayName -eq "Global Administrator" -or $_.DisplayName -eq "Company Administrator" }
+Write-Output "グローバル管理者ロール検索結果: $($globalAdminRole.DisplayName)"
+
 $isGlobalAdmin = $false
-$roleMembers = @()  # 初期化して常に配列として扱えるようにする
+$roleMembers = @() # 初期化して常に配列として扱えるようにする
 
 if ($globalAdminRole) {
-    Write-Output "グローバル管理者ロールを検出: $($globalAdminRole.DisplayName) (ID: $($globalAdminRole.Id))"
+    Write-Output "グローバル管理者ロールID: $($globalAdminRole.Id)"
+    Write-Output "グローバル管理者ロール表示名: $($globalAdminRole.DisplayName)"
     $roleMembers = Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id
-    Write-Output "グローバル管理者ロールメンバー数: $($roleMembers.Count)"
+    Write-Output "グローバル管理者ロールメンバー取得完了: $($roleMembers.Count) 件"
     $isGlobalAdmin = $roleMembers.Id -contains $currentUser.Id
     Write-Output "現在のユーザーがグローバル管理者か: $isGlobalAdmin"
 }
 
-# ReadWrite権限があるかどうか
-$isAdmin = ($context.Scopes -contains "Directory.ReadWrite.All")
-Write-Output "ReadWrite権限: $isAdmin"
-
-# ユーザーの種類を決定
+# ユーザー種別の判定
 if ($currentUser.UserType -eq "Guest") {
     $userType = "Guest"
 } elseif ($isGlobalAdmin) {
@@ -93,62 +85,70 @@ if ($currentUser.UserType -eq "Guest") {
     $userType = "Member"
 }
 
-Write-Output "現在のユーザー種別: $userType"
+Write-Host "現在のユーザー種別: $userType"
 
 # 一般ユーザなら管理者の承認をリクエスト
-if ($userType -eq "Member" -and -not $isAdmin) {
+if ($userType -eq "Member" -and -not $isGlobalAdmin) {
     Write-Host "一般ユーザーのため、API パーミッションの付与が必要です。"
-    Write-Host "ブラウザでグローバル管理者の承認ページを開きます..."
     Start-Process "https://login.microsoftonline.com/$tenantId/adminconsent?client_id=$clientId"
     Write-Host "グローバル管理者の承認を得てから、もう一度スクリプトを実行してください。"
     Exit
 }
 
 # グローバル管理者または承認済みユーザーなら、Microsoft Graph にフル接続
-Write-Output "権限が確認できました。フルスコープで再接続します..."
+Write-Output "Microsoft Graph APIに必要な権限で接続します..."
 Connect-MgGraph -Scopes $requiredScopes
-Write-Output "Microsoft Graph API再接続完了（フルスコープ: $((Get-MgContext).Scopes -join ', ')）"
+Write-Output "Microsoft Graph APIに接続しました（スコープ: $((Get-MgContext).Scopes -join ', ')）"
 
-# ユーザー自身のOneDriveデータを試験的に取得（アクセス確認）
 if ($userType -ne "Guest") {
     try {
-        $testDrive = Get-MgUserDrive -UserId $currentUser.Id
-        Write-Output "OneDrive アクセス権限の確認OK - ユーザー自身のOneDriveにアクセスできます"
+        $drive = Get-MgUserDrive -UserId (Get-MgUser -UserId (Get-MgContext).Account).Id
+        Write-Host "OneDrive のデータを取得しました: $drive"
     } catch {
-        Write-Warning "OneDrive のデータ取得に失敗しました。管理者の承認が正しく行われているか確認してください: $_"
+        Write-Host "OneDrive のデータ取得に失敗しました。管理者の承認が正しく行われているか確認してください。"
     }
 } else {
-    Write-Output "ゲストアカウントのため、OneDrive データの取得は行いません"
+    Write-Host "ゲストアカウントのため、OneDrive データの取得は行いません。"
 }
+
 #endregion
 
-#region ユーザーデータ取得と処理
+#region データ収集
+
 # 出力用のユーザーリスト
 $userList = @()
-Write-Output "ユーザー情報の取得を開始します..."
 
-if ($isAdmin -or $isGlobalAdmin) {
-    # 管理者の場合、すべてのユーザー情報を取得
-    Write-Output "管理者権限で全ユーザー情報を取得します"
-    $allUsers = Get-MgUser -All -Property DisplayName,Mail,UserType,Id,onPremisesSamAccountName,AccountEnabled,onPremisesLastSyncDateTime
-    Write-Output "取得ユーザー数: $($allUsers.Count)"
+Write-Output "ユーザー情報取得を開始します..."
+if ($isGlobalAdmin -or $isAdmin) {
+    # グローバル管理者の場合、すべてのユーザー情報を取得
+    $allUsers = Get-MgUser -All -Property DisplayName,Mail,onPremisesSamAccountName,AccountEnabled,onPremisesLastSyncDateTime,UserType
+    Write-Output "取得したユーザー数: $($allUsers.Count)"
     
-    $processedCount = 0
     foreach ($user in $allUsers) {
-        $processedCount++
-        if ($processedCount % 10 -eq 0) {
-            Write-Output "処理中: $processedCount / $($allUsers.Count) ユーザー"
-        }
-        
         # ユーザー種別の判定
-        $userTypeValue = "Member" # デフォルト値
+        Write-Output "処理中: $($user.DisplayName) (ID: $($user.Id), UserType: $($user.UserType))"
+        
+        # まずUserTypeを基準に判定
         if ($user.UserType -eq "Guest") {
             $userTypeValue = "Guest"
+            Write-Output "  ゲストユーザーを特定: $($user.DisplayName)"
+        } else {
+            $userTypeValue = "Member"
+            Write-Output "  通常のメンバーユーザー: $($user.DisplayName)"
         }
         
-        # 管理者かどうかを確認
-        if ($roleMembers.Id -contains $user.Id) {
-            $userTypeValue = "Administrator"
+        # グローバル管理者の場合（優先的に設定）
+        $isUserAdmin = $false
+        if ($roleMembers.Count -gt 0) {
+            foreach ($member in $roleMembers) {
+                # 明示的にロールメンバーと比較（大文字小文字を区別しない）
+                if ($member.Id -eq $user.Id) {
+                    $isUserAdmin = $true
+                    $userTypeValue = "Administrator"
+                    Write-Output "  グローバル管理者を特定: $($user.DisplayName)"
+                    break
+                }
+            }
         }
         
         try {
@@ -157,6 +157,7 @@ if ($isAdmin -or $isGlobalAdmin) {
             $usedGB = [math]::Round($drive.Quota.Used / 1GB, 2)
             $remainingGB = [math]::Round(($drive.Quota.Remaining) / 1GB, 2)
             $usagePercent = [math]::Round(($drive.Quota.Used / $drive.Quota.Total) * 100, 2)
+            Write-Output "  OneDrive情報: 総容量=$totalGB GB, 使用量=$usedGB GB, 使用率=$usagePercent%"
             
             # OneDrive状態の詳細な判定
             if ($usagePercent -ge 90) {
@@ -171,6 +172,7 @@ if ($isAdmin -or $isGlobalAdmin) {
                 $oneDriveStatus = "設定済（詳細不明）"
             }
         } catch {
+            Write-Output "  OneDrive情報取得エラー: $_"
             $totalGB = "取得不可"
             $usedGB = "取得不可"
             $remainingGB = "取得不可"
@@ -192,24 +194,41 @@ if ($isAdmin -or $isGlobalAdmin) {
             "OneDrive状態"  = $oneDriveStatus
         }
     }
-    Write-Output "全ユーザー情報の取得と処理が完了しました。ユーザー数: $($userList.Count)"
 } else {
     # 一般ユーザーまたはゲストの場合、自分自身の情報のみ取得
-    Write-Output "一般ユーザーまたはゲストユーザーモードで自分自身の情報のみ取得します"
     try {
         # ユーザー種別の判定（自分自身）
-        $userTypeValue = "Member" # デフォルト値
+        # UserTypeを基準に判定
         if ($currentUser.UserType -eq "Guest") {
             $userTypeValue = "Guest"
-        } elseif ($isGlobalAdmin) {
-            $userTypeValue = "Administrator"
+            Write-Output "自分はゲストユーザーです"
+        } else {
+            $userTypeValue = "Member"
+            Write-Output "自分は通常のメンバーユーザーです"
         }
+        
+        # グローバル管理者かどうかを判定（優先的に設定）
+        $isUserAdmin = $false
+        if ($roleMembers.Count -gt 0) {
+            Write-Output "ロールメンバー数: $($roleMembers.Count)"
+            foreach ($member in $roleMembers) {
+                Write-Output "比較: ロールID=$($member.Id), 自分のID=$($currentUser.Id)"
+                if ($member.Id -eq $currentUser.Id) {
+                    $isUserAdmin = $true
+                    $userTypeValue = "Administrator"
+                    Write-Output "自分はグローバル管理者権限を持っています"
+                    break
+                }
+            }
+        }
+        Write-Output "最終判定：自分のユーザー種別: $userTypeValue"
         
         $myDrive = Get-MgUserDrive -UserId $UserUPN -ErrorAction Stop
         $totalGB = [math]::Round($myDrive.Quota.Total / 1GB, 2)
         $usedGB = [math]::Round($myDrive.Quota.Used / 1GB, 2)
-        $remainingGB = [math]::Round(($myDrive.Quota.Remaining) / 1GB, 2)
+        $remainingGB = [math]::Round(($myDrive.Quota.Total - $myDrive.Quota.Used) / 1GB, 2)
         $usagePercent = [math]::Round(($myDrive.Quota.Used / $myDrive.Quota.Total)*100, 2)
+        Write-Output "自分のOneDrive情報: 総容量=$totalGB GB, 使用量=$usedGB GB, 使用率=$usagePercent%"
         
         # OneDrive状態の詳細な判定
         if ($usagePercent -ge 90) {
@@ -224,7 +243,7 @@ if ($isAdmin -or $isGlobalAdmin) {
             $oneDriveStatus = "設定済（詳細不明）"
         }
     } catch {
-        Write-Warning "自分のOneDrive情報取得エラー: $_"
+        Write-Output "OneDrive情報取得エラー: $_"
         $totalGB = "取得不可"
         $usedGB = "取得不可"
         $remainingGB = "取得不可"
@@ -245,11 +264,12 @@ if ($isAdmin -or $isGlobalAdmin) {
         "使用率(%)"     = $usagePercent
         "OneDrive状態"  = $oneDriveStatus
     }
-    Write-Output "自分自身の情報の取得と処理が完了しました"
 }
+
 #endregion
 
-#region 出力ファイル生成
+#region レポート生成
+
 # タイムスタンプ
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
 
@@ -260,17 +280,16 @@ $htmlFile = "OneDriveCheck.$timestamp.html"
 $jsFile = "OneDriveCheck.$timestamp.js"
 
 # 出力パスの設定（日付フォルダに変更）
-$csvPath = Join-Path -Path $dateFolderPath -ChildPath $csvFile
-$logPath = Join-Path -Path $dateFolderPath -ChildPath $logFile
-$htmlPath = Join-Path -Path $dateFolderPath -ChildPath $htmlFile
-$jsPath = Join-Path -Path $dateFolderPath -ChildPath $jsFile
+$csvPath = (Join-Path -Path $dateFolderPath -ChildPath $csvFile)
+$logPath = (Join-Path -Path $dateFolderPath -ChildPath $logFile)
+$htmlPath = (Join-Path -Path $dateFolderPath -ChildPath $htmlFile)
+$jsPath = (Join-Path -Path $dateFolderPath -ChildPath $jsFile)
 
 # JavaScriptファイル名のみ（HTMLからの相対パス用）
 $jsFileNameOnly = $jsFile
 
 # CSV出力（文字化け対策済み）
 try {
-    Write-Output "CSVファイルを作成しています: $csvPath"
     # PowerShell Core (バージョン 6.0以上)の場合
     if ($PSVersionTable.PSVersion.Major -ge 6) {
         $userList | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8BOM
@@ -755,7 +774,7 @@ Write-Output "JavaScriptファイルを作成しました: $jsPath"
 # 実行日時とユーザー情報を取得
 $executionDateFormatted = $executionTime.ToString("yyyy/MM/dd HH:mm:ss")
 $executorName = $currentUser.DisplayName
-$userTypeDisplay = if($currentUser.UserType){$currentUser.UserType}else{"未定義"}
+$userType = if($currentUser.UserType){$currentUser.UserType}else{"未定義"}
 
 # HTML ファイルの生成
 $htmlContent = @"
@@ -978,8 +997,8 @@ $htmlContent = @"
         <div class="info-section">
             <p><span class="info-label">実行日時:</span> $executionDateFormatted</p>
             <p><span class="info-label">実行者:</span> $executorName</p>
-            <p><span class="info-label">実行者の種別:</span> $userTypeDisplay</p>
-            <p><span class="info-label">実行モード:</span> $(if($isAdmin -or $isGlobalAdmin){"管理者モード (Administrator)"}else{"ユーザーモード"})</p>
+            <p><span class="info-label">実行者の種別:</span> $userType</p>
+            <p><span class="info-label">実行モード:</span> $(if($isGlobalAdmin -or $isAdmin){"管理者モード (Administrator)"}else{"ユーザーモード ($userType)"})</p>
             <p><span class="info-label">出力フォルダ:</span> $dateFolderPath</p>
         </div>
         
@@ -1048,6 +1067,7 @@ $htmlContent += @"
             <p><span class="info-label">色の凡例:</span></p>
             <p>🟢 緑色の行: 使用率が70%未満のユーザー</p>
             <p>⚫ グレー色の行: OneDriveを設定利用していないユーザー</p>
+            <p>⚪ 「未設定」: OneDriveが設定されていないことを示します</p>
             <p>🟡 黄色の行: 使用率が70%以上90%未満のユーザー</p>
             <p>🔴 赤色の行: 使用率が90%以上のユーザー</p>
             <p>⚪ グレーの行: 無効なアカウント</p>
@@ -1061,16 +1081,18 @@ $htmlContent += @"
 $htmlContent | Out-File -FilePath $htmlPath -Encoding UTF8
 Write-Output "HTMLファイルを作成しました: $htmlPath"
 
+#endregion
+
 # 出力ディレクトリを開く
 try {
     Start-Process -FilePath "explorer.exe" -ArgumentList $dateFolderPath
 } catch {
     Write-Warning "フォルダを開けませんでした: $_"
 }
-#endregion
 
-Write-Output "スクリプトの実行が完了しました"
-Write-Output "実行時間: $((Get-Date) - $executionTime) (時間:分:秒)"
+# スクリプト終了
+Write-Output "処理が完了しました。日時: $(Get-Date)"
+Write-Output "レポートは以下のフォルダに格納されています: $dateFolderPath"
 
 # スクリプト終了待機
 Read-Host "Enterキーを押すと終了します"

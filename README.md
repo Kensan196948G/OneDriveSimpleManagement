@@ -8,82 +8,99 @@
 
 ![OneDriveレポートサンプル](https://via.placeholder.com/800x400?text=OneDrive+レポート+サンプル)
 
-## 主な機能
+## 利用可能なスクリプトファイルと役割
 
-- 🔍 **ユーザー情報の取得**
-  - ユーザー名、メールアドレス、ログインユーザー名
-  - ユーザー種別の表示（Administrator、Member、Guest）
-  - アカウント状態（有効/無効）の確認
-  - グローバル管理者は「Administrator」として表示
+本リポジトリでは以下のPowerShellスクリプトファイルを提供しています：
 
-- 💾 **OneDrive容量情報の取得**
-  - 総容量、使用容量、残り容量、使用率の表示
-  - OneDrive状態の表示（設定済/未設定）
-  - 使用率に応じた色分け表示（未設定ユーザーはグレー表示）
+| スクリプト名 | 役割 | 実行優先度 |
+|-------------|------|-----------|
+| **OneDriveSyncManagement.ps1** | メインスクリプト：OneDrive利用状況の収集とレポート生成 | 3️⃣ |
+| **Microsoft-Graph-Update-Helper.ps1** | Microsoft Graphモジュール更新用ヘルパー | 1️⃣ |
+| **OneDrivePermission-Helper.ps1** | API権限取得用ヘルパー | 2️⃣ |
+| OneDriveSimpleManagement.ps1 | 過去バージョン（参考用） | - |
+| miraiAllUserInfoComplete_integrated.ps1 | 過去バージョン（参考用） | - |
 
-- 📊 **高機能なHTMLレポート**
-  - インクリメンタル検索機能
-  - 各項目ごとのフィルタリング
-  - 表示件数を選択可能なページング機能
-  - CSVエクスポート機能
-  - 印刷機能
+> 注意：実際に使用するのは上部3つのスクリプトです。残りは参照用として保持されています。
 
-## クイックスタート
+## 実行手順と実行順序
 
-### 基本実行（カレントディレクトリに出力）
+以下の順序でスクリプトを実行することを推奨します：
+
+### 1️⃣ Microsoft Graphモジュール更新（初回または更新時）
 ```powershell
-# 1. リポジトリをクローン
-git clone https://github.com/Kensan196948G/OneDriveSimpleManagement.git
-cd OneDriveSimpleManagement
-
-# 2. スクリプトを実行
-.\miraiAllUserInfoComplete.ps1
+# 管理者権限のPowerShellで実行
+.\Microsoft-Graph-Update-Helper.ps1
 ```
+- **目的**: Microsoft Graphモジュールを最新バージョンに更新し、実行環境を整備
+- **実行頻度**: 初回実行時、またはエラーが発生した場合
+- **管理者権限**: 必須（モジュールのインストール・更新に必要）
 
-### 直接ダウンロードして実行
+### 2️⃣ API権限の確認と取得
 ```powershell
-# スクリプトを直接ダウンロード
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Kensan196948G/OneDriveSimpleManagement/main/miraiAllUserInfoComplete.ps1" -OutFile "miraiAllUserInfoComplete.ps1"
-
-# スクリプトを実行
-.\miraiAllUserInfoComplete.ps1
+# 一般ユーザー権限でも実行可能（管理者権限推奨）
+.\OneDrivePermission-Helper.ps1
 ```
+- **目的**: テナントIDの確認・更新とAPI権限の取得・確認
+- **実行頻度**: 初回実行時、またはAPI権限エラーが発生した場合
+- **管理者権限**: 推奨（グローバル管理者の場合、権限承認が容易）
 
-### 出力先を指定して実行
+### 3️⃣ OneDrive利用状況レポートの生成
 ```powershell
-.\miraiAllUserInfoComplete.ps1 -OutputDir "C:\Reports"
+# 管理者権限で実行（推奨）
+Start-Process PowerShell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PWD\OneDriveSyncManagement.ps1`""
+
+# または直接実行
+.\OneDriveSyncManagement.ps1
 ```
-> **注**: 指定したフォルダ内に日付ベースのフォルダが自動生成され、その中にすべての出力ファイルが収納されます。
+- **目的**: OneDriveの利用状況データ収集とレポート生成
+- **実行頻度**: 利用状況の確認が必要な時
+- **管理者権限**: 推奨（全ユーザーの情報を取得する場合は必須）
+- **出力**: CSV、HTML、テキストログ形式のレポート
 
-## 詳細ドキュメント
+## 詳細実行ガイド
 
-詳細な使用方法、機能説明、トラブルシューティングについては、[OneDriveCheck_ドキュメント.md](OneDriveCheck_ドキュメント.md)を参照してください。
+### セットアップと初回実行
 
-## 必要条件
+1. **環境準備（初回のみ）**
+   ```powershell
+   # 1. 管理者権限でPowerShellを開く
+   # 2. 作業ディレクトリに移動
+   cd "パス\OneDriveSimpleManagement"
+   
+   # 3. Microsoft Graphモジュールの更新
+   .\Microsoft-Graph-Update-Helper.ps1
+   
+   # 4. API権限の確認と取得
+   .\OneDrivePermission-Helper.ps1
+   # （プロンプトでテナントIDの自動更新に「Y」と回答）
+   ```
 
-- Windows PowerShell 5.1以上 または PowerShell Core 6.0以上
-- Microsoft Graph PowerShellモジュール
-- Microsoft 365アカウント（管理者権限推奨）
+2. **レポート生成（定期的に実行）**
+   ```powershell
+   # 管理者権限で実行（すべてのユーザー情報を取得）
+   Start-Process PowerShell -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PWD\OneDriveSyncManagement.ps1`""
+   
+   # 出力先を指定して実行
+   .\OneDriveSyncManagement.ps1 -OutputDir "C:\Reports"
+   ```
 
-## スクリーンショット
+### エラー発生時のトラブルシューティング
 
-### レポート画面
-![レポート画面](https://via.placeholder.com/400x200?text=レポート画面)
+1. **Microsoft Graph認証エラー**
+   ```powershell
+   # モジュールを更新
+   .\Microsoft-Graph-Update-Helper.ps1
+   ```
 
-### フィルタリング機能
-![フィルタリング機能](https://via.placeholder.com/400x200?text=フィルタリング機能)
+2. **API権限エラー**
+   ```powershell
+   # 権限確認・取得
+   .\OneDrivePermission-Helper.ps1
+   ```
 
-### 検索機能
-![検索機能](https://via.placeholder.com/400x200?text=検索機能)
-
-## ライセンス
-
-このプロジェクトは[MITライセンス](LICENSE)の下で公開されています。
-
-## 貢献
-
-バグ報告や機能リクエストは、GitHubのIssueで受け付けています。プルリクエストも歓迎します！
-
----
-
-*最終更新日: 2025年3月10日*
+3. **テナントID関連エラー**
+   ```powershell
+   # テナントIDを確認・更新
+   .\OneDrivePermission-Helper.ps1
+   # （プロンプトでテナントIDの自動更新に「Y」と回答）
+   ```
